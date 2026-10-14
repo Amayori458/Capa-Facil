@@ -1,4 +1,4 @@
-const { getSupabase, requireAuth, readJsonBody, hashPassword } = require('./_auth');
+const { getSupabase, requireAuth, readJsonBody, hashPassword, ALL_PRODUCTS } = require('./_auth');
 
 module.exports = async (req, res) => {
   const session = requireAuth(req, res, { roles: ['admin', 'vendedora'] });
@@ -8,7 +8,7 @@ module.exports = async (req, res) => {
 
   if (req.method === 'GET') {
     let query = supabase.from('usuarios')
-      .select('id,nome,usuario,role,ativo,criado_em,whatsapp,criado_por_vendedora_id')
+      .select('id,nome,usuario,role,ativo,criado_em,whatsapp,criado_por_vendedora_id,produtos')
       .order('criado_em', { ascending: true });
     if (!isAdmin) query = query.eq('criado_por_vendedora_id', session.uid);
     const { data, error } = await query;
@@ -73,6 +73,12 @@ module.exports = async (req, res) => {
       updates.role = body.role;
       // Conta deixou de ser cliente de uma vendedora específica — não faz sentido continuar "pertencendo" a ela.
       if (body.role !== 'cliente') updates.criado_por_vendedora_id = null;
+    }
+    if (Array.isArray(body.produtos)) {
+      // Só o admin escolhe quem monta cada produto (vendedora nunca altera isso, nem dos próprios clientes).
+      if (!isAdmin) { res.status(403).json({ error: 'Só o admin pode liberar produtos.' }); return; }
+      if (!body.produtos.every(p => ALL_PRODUCTS.includes(p))) { res.status(400).json({ error: 'Produto inválido.' }); return; }
+      updates.produtos = Array.from(new Set(body.produtos));
     }
     if (typeof body.whatsapp === 'string') updates.whatsapp = body.whatsapp.replace(/\D/g, '').slice(0, 20) || null;
     if (typeof body.senha === 'string' && body.senha) {

@@ -1,4 +1,4 @@
-const { getSupabase, verifyPassword, createSessionToken, setSessionCookie, readJsonBody } = require('./_auth');
+const { getSupabase, verifyPassword, createSessionToken, setSessionCookie, readJsonBody, allowedProducts } = require('./_auth');
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') { res.status(405).json({ error: 'Método não permitido.' }); return; }
@@ -14,5 +14,6 @@ module.exports = async (req, res) => {
     return;
   }
   setSessionCookie(res, createSessionToken(data));
-  res.status(200).json({ nome: data.nome, usuario: data.usuario, role: data.role, vendedoraId: data.criado_por_vendedora_id || null });
+  const produtos = await allowedProducts(supabase, { role: data.role, uid: data.id });
+  res.status(200).json({ nome: data.nome, usuario: data.usuario, role: data.role, vendedoraId: data.criado_por_vendedora_id || null, produtos });
 };

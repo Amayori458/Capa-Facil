@@ -1,0 +1,128 @@
+/* Editor da gravação a laser (laser-editor.js) — usa os tokens de cor do app, nos dois temas. */
+.laser-editor{
+  position:fixed; inset:0; z-index:90; display:flex; flex-direction:column;
+  background:var(--bg); color:var(--ink); font-size:13px;
+}
+.laser-editor, .laser-editor *{ box-sizing:border-box; }
+.laser-editor h2{ font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-muted); margin:0 0 10px; }
+.laser-editor p{ margin:0; }
+
+.le-head{
+  flex:none; display:flex; align-items:center; gap:10px; padding:10px 16px; flex-wrap:wrap;
+  background:var(--surface); border-bottom:1px solid var(--border);
+}
+.le-title{ font-size:15px; }
+.le-sub{ flex:1; color:var(--ink-muted); min-width:0; }
+.le-head .btn:disabled{ opacity:.45; cursor:default; }
+
+.le-body{ flex:1; min-height:0; display:grid; grid-template-columns:290px minmax(0,1fr) 320px; }
+.le-side, .le-props{ overflow:auto; background:var(--surface); display:flex; flex-direction:column; }
+.le-side{ border-right:1px solid var(--border); }
+.le-props{ border-left:1px solid var(--border); }
+.le-side section, .le-props section{ padding:14px 16px; border-bottom:1px solid var(--border); }
+
+.laser-editor input[type=text], .laser-editor input[type=number], .laser-editor input[type=search],
+.laser-editor select, .laser-editor textarea{
+  width:100%; padding:7px 9px; border:1px solid var(--border); border-radius:7px;
+  background:var(--bg); color:var(--ink); font:inherit;
+}
+.laser-editor textarea{ resize:vertical; min-height:58px; }
+.laser-editor input[type=range]{ width:100%; accent-color:var(--accent); }
+.laser-editor :focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+
+.le-field{ display:flex; flex-direction:column; gap:4px; margin-bottom:10px; min-width:0; }
+.le-field > label{ font-size:11.5px; font-weight:500; color:var(--ink-muted); display:flex; justify-content:space-between; }
+.le-row{ display:flex; gap:8px; align-items:flex-end; }
+.le-row > *{ flex:1; min-width:0; }
+.le-row > .btn{ flex:none; }
+.le-hint{ font-size:12px; line-height:1.5; color:var(--ink-muted); }
+.le-warn{ color:var(--danger); font-size:12px; font-weight:600; margin:-4px 0 8px; min-height:0; }
+.le-warn:empty{ display:none; }
+.le-add{ display:flex; gap:8px; flex-wrap:wrap; }
+.le-add .btn{ flex:1; justify-content:center; cursor:pointer; }
+.le-seg{ display:flex; gap:4px; flex-wrap:wrap; }
+.le-seg .btn{ flex:1; justify-content:center; }
+.le-seg .btn.on{ background:var(--accent-tint); border-color:var(--accent); color:var(--accent-strong); }
+.le-props .btn.danger{ color:var(--danger); }
+.le-props .btn.danger:hover:not(:disabled){ background:var(--danger-bg); border-color:var(--danger-border); }
+.le-props .le-row > .btn{ justify-content:center; }
+
+.le-items{ list-style:none; margin:0 0 8px; padding:0; display:flex; flex-direction:column; gap:3px; max-height:260px; overflow:auto; }
+.le-row-item.on .le-pick{ background:var(--accent-tint); border-color:var(--accent); }
+.le-pick{
+  width:100%; display:flex; align-items:center; gap:8px; padding:7px 9px; text-align:left;
+  border:1px solid transparent; border-radius:7px; background:transparent; color:var(--ink); font:inherit; cursor:pointer;
+}
+.le-pick:hover{ background:var(--surface-2); }
+.le-pick span{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.le-pick .icon{ flex:none; width:16px; height:16px; }
+.le-tag{ flex:none; font-style:normal; font-size:10.5px; font-weight:600; padding:1px 7px; border-radius:99px; }
+.le-tag.error{ background:var(--danger-bg); color:var(--danger); }
+.le-tag.warn{ background:var(--warning-bg); color:var(--warning); }
+.le-empty{ color:var(--ink-muted); padding:6px 4px; font-size:12px; }
+
+.le-fonts{ max-height:230px; overflow:auto; border:1px solid var(--border); border-radius:7px; background:var(--bg); margin-top:4px; }
+.le-font{
+  width:100%; display:flex; flex-direction:column; gap:1px; padding:6px 9px; text-align:left;
+  border:0; border-bottom:1px solid var(--border); background:transparent; color:var(--ink); font:inherit; cursor:pointer;
+}
+.le-font:last-child{ border-bottom:0; }
+.le-font:hover{ background:var(--surface-2); }
+.le-font.on{ background:var(--accent-tint); box-shadow:inset 3px 0 0 var(--accent); }
+.le-fname{ font-size:11px; color:var(--ink-muted); }
+.le-fname em{ font-style:normal; color:var(--danger); font-weight:600; }
+.le-fsample{ font-size:19px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.le-font.bad .le-fsample{ opacity:.4; }
+
+.le-keys{ margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--ink-muted); }
+.le-keys kbd{ font:600 11px "IBM Plex Mono",monospace; background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:1px 5px; color:var(--ink); }
+
+.le-main{ display:flex; flex-direction:column; min-width:0; min-height:0; }
+.le-bar{ flex:none; display:flex; align-items:center; gap:6px; padding:8px 16px; color:var(--ink-muted); font-size:12px; }
+.le-spacer{ flex:1; }
+.le-stage{ flex:1; min-height:0; overflow:auto; padding:8px 24px 24px; background:var(--surface-2); }
+.le-paper{ margin:0 auto; }
+.le-paper svg{ display:block; width:100%; background:#fff; box-shadow:var(--shadow); touch-action:none; user-select:none; }
+.le-status{ flex:none; padding:8px 16px; min-height:34px; font-weight:600; border-top:1px solid var(--border); background:var(--surface); }
+.le-status[data-kind=error]{ color:var(--danger); }
+.le-status[data-kind=warn]{ color:var(--warning); }
+.le-status[data-kind=ok]{ color:var(--success); }
+
+/* desenho do canvas — espessuras em mm, calculadas pelo editor onde precisam ficar constantes na tela */
+.le-item{ cursor:move; }
+.le-item rect{ fill:transparent; }
+.le-margin{ fill:none; stroke:#14a89d; stroke-width:.35; stroke-dasharray:2 1.6; pointer-events:none; }
+.le-center{ stroke:#14a89d; stroke-width:.18; opacity:.35; stroke-dasharray:1.5 1.5; pointer-events:none; }
+.le-snap{ stroke:#ff2d8f; stroke-width:.3; pointer-events:none; }
+.le-issue{ fill:none; stroke-width:.5; stroke-dasharray:1.6 1.2; pointer-events:none; }
+.le-issue.error{ stroke:#d6283a; }
+.le-issue.warn{ stroke:#d9920f; }
+.le-sel{ fill:none; stroke:#14a89d; }
+.le-handle{ fill:#fff; stroke:#0f7f77; cursor:nwse-resize; }
+.le-handle[data-handle=ne], .le-handle[data-handle=sw]{ cursor:nesw-resize; }
+.le-handle.le-rot{ cursor:grab; fill:#14a89d; }
+
+.le-picker{ position:absolute; inset:0; z-index:5; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; padding:16px; }
+.le-picker[hidden]{ display:none; }
+.le-picker-box{ width:min(760px,100%); max-height:100%; display:flex; flex-direction:column; background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); overflow:hidden; }
+.le-picker-box header{ display:flex; align-items:center; gap:10px; padding:12px 14px; border-bottom:1px solid var(--border); }
+.le-picker-box header input{ flex:1; }
+.le-chips{ display:flex; gap:6px; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--border); }
+.le-chip{ border:1px solid var(--border); background:var(--surface); color:var(--ink); border-radius:99px; padding:4px 11px; font:inherit; font-size:12px; cursor:pointer; }
+.le-chip.on{ background:var(--accent-tint); border-color:var(--accent); color:var(--accent-strong); font-weight:600; }
+.le-icon-grid{ padding:12px 14px; overflow:auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:8px; }
+.le-icon{ aspect-ratio:1; display:flex; align-items:center; justify-content:center; padding:6px; border:1px solid var(--border); border-radius:8px; background:#fff; cursor:pointer; }
+.le-icon:hover{ border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-tint); }
+.le-icon img{ max-width:100%; max-height:100%; object-fit:contain; }
+
+@media (max-width:1080px){
+  .le-body{ grid-template-columns:260px minmax(0,1fr); }
+  .le-props{ grid-column:1 / -1; border-left:0; border-top:1px solid var(--border); max-height:45vh; }
+}
+@media (max-width:700px){
+  .le-body{ display:flex; flex-direction:column; overflow:auto; }
+  .le-main{ order:-1; flex:none; }
+  .le-stage{ min-height:55vh; }
+  .le-side, .le-props{ overflow:visible; border:0; max-height:none; }
+  .le-sub{ display:none; }
+}

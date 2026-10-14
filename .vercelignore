@@ -3,3 +3,4 @@ node_modules
 local-dev-server.js
 test_handler.js
 index.backup-*.html
+tests

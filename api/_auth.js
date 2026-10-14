@@ -91,6 +91,23 @@ function requireAuth(req, res, opts) {
   return session;
 }
 
+// Produtos que o site sabe montar. O id do produto de um gabarito vem do prefixo do id
+// do gabarito (encadernados são "enc-<formato>-<lâminas>") — o servidor não conhece a lista
+// de gabaritos, então o prefixo é o que impede alguém de montar um produto não liberado.
+const ALL_PRODUCTS = ['autocolante', 'encadernado', 'laser'];
+function produtoDeGabarito(gabaritoId) {
+  if (String(gabaritoId || '').startsWith('laser-')) return 'laser';
+  return String(gabaritoId || '').startsWith('enc-') ? 'encadernado' : 'autocolante';
+}
+// Admin monta tudo; os demais, só o que o admin liberou (lido do banco a cada chamada,
+// pra liberar/tirar acesso valer na hora, sem precisar de novo login).
+async function allowedProducts(supabase, session) {
+  if (session.role === 'admin') return ALL_PRODUCTS.slice();
+  const { data } = await supabase.from('usuarios').select('produtos').eq('id', session.uid).maybeSingle();
+  const list = data && Array.isArray(data.produtos) ? data.produtos : ['autocolante'];
+  return list.filter(p => ALL_PRODUCTS.includes(p));
+}
+
 async function readJsonBody(req) {
   if (req.body && typeof req.body === 'object') return req.body;
   return new Promise((resolve) => {
@@ -103,4 +120,5 @@ async function readJsonBody(req) {
 module.exports = {
   getSupabase, hashPassword, verifyPassword, createSessionToken, verifySessionToken,
   setSessionCookie, clearSessionCookie, getSession, requireAuth, readJsonBody,
+  ALL_PRODUCTS, produtoDeGabarito, allowedProducts,
 };

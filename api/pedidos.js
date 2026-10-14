@@ -1,6 +1,18 @@
-const { getSupabase, requireAuth, readJsonBody } = require('./_auth');
+const crypto = require('crypto');
+const { getSupabase, requireAuth, readJsonBody, produtoDeGabarito, allowedProducts } = require('./_auth');
 
 const CLIENT_SAFE_COLUMNS = 'id,numero_pedido,gabarito_id,gabarito_label,criado_em,status,mockup_url,motivo_reprovacao,vendedora_id,cliente_id';
+// Mockup é gerado no navegador como PNG/JPEG — qualquer outro mime (ex: image/svg+xml)
+// é rejeitado pra não guardar/servir um arquivo com Content-Type controlado pelo cliente.
+const ALLOWED_MOCKUP_MIME = { 'image/png': 'png', 'image/jpeg': 'jpg' };
+// Ponto opcional marcado no mockup ao pedir ajuste — {xPct,yPct} em % da imagem, sempre validado
+// antes de gravar (nunca confia cegamente no que o cliente manda).
+function validPonto(p){
+  if (!p || typeof p !== 'object') return null;
+  const x = Number(p.xPct), y = Number(p.yPct);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 100 || y < 0 || y > 100) return null;
+  return { xPct: Math.round(x * 10) / 10, yPct: Math.round(y * 10) / 10 };
+}
 
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
@@ -18,7 +30,7 @@ module.exports = async (req, res) => {
         return;
       }
       const { data, error } = await supabase.from('pedidos')
-        .select('id,numero_pedido,gabarito_id,gabarito_label,nome_arquivo,usuario_nome,criado_em,precisa_ajuda,status,vendedora_id,cliente_id,mockup_url')
+        .select('id,numero_pedido,gabarito_id,gabarito_label,nome_arquivo,usuario_nome,criado_em,precisa_ajuda,status,vendedora_id,cliente_id,mockup_url,aprovado_em')
         .order('criado_em', { ascending: false }).limit(500);
       if (error) { res.status(500).json({ error: error.message }); return; }
       res.status(200).json({ pedidos: data });
@@ -34,7 +46,7 @@ module.exports = async (req, res) => {
         return;
       }
       const { data, error } = await supabase.from('pedidos')
-        .select('id,numero_pedido,gabarito_id,gabarito_label,nome_arquivo,criado_em,status,mockup_url,motivo_reprovacao,cliente_id,aprovado_em')
+        .select('id,numero_pedido,gabarito_id,gabarito_label,nome_arquivo,criado_em,status,mockup_url,motivo_reprovacao,motivo_reprovacao_ponto,cliente_id,aprovado_em,approval_token')
         .eq('vendedora_id', session.uid)
         .order('criado_em', { ascending: false }).limit(500);
       if (error) { res.status(500).json({ error: error.message }); return; }
@@ -43,11 +55,16 @@ module.exports = async (req, res) => {
     }
 
     // cliente — nunca recebe design_json nem mockup_storage_path
+    let vendedoraInfo = null;
+    if (session.vendedoraId) {
+      const { data: v } = await supabase.from('usuarios').select('nome,whatsapp').eq('id', session.vendedoraId).maybeSingle();
+      if (v) vendedoraInfo = { vendedora_nome: v.nome, vendedora_whatsapp: v.whatsapp };
+    }
     if (id) {
       const { data, error } = await supabase.from('pedidos').select(CLIENT_SAFE_COLUMNS).eq('id', id).eq('cliente_id', session.uid).maybeSingle();
       if (error) { res.status(500).json({ error: error.message }); return; }
       if (!data) { res.status(404).json({ error: 'Pedido não encontrado.' }); return; }
-      res.status(200).json({ pedido: data });
+      res.status(200).json({ pedido: Object.assign({}, data, vendedoraInfo) });
       return;
     }
     const { data, error } = await supabase.from('pedidos')
@@ -55,6 +72,7 @@ module.exports = async (req, res) => {
       .eq('cliente_id', session.uid)
       .order('criado_em', { ascending: false }).limit(500);
     if (error) { res.status(500).json({ error: error.message }); return; }
+    if (vendedoraInfo) data.forEach(p => Object.assign(p, vendedoraInfo));
     res.status(200).json({ pedidos: data });
     return;
   }
@@ -71,6 +89,11 @@ module.exports = async (req, res) => {
     const precisa_ajuda = body.precisaAjuda === true;
     if (!numero_pedido || !gabarito_id) { res.status(400).json({ error: 'Dados incompletos.' }); return; }
     const supabase = getSupabase();
+    // Produto liberado? (o admin escolhe quem monta cada produto — o front só esconde, quem barra é aqui)
+    if (!(await allowedProducts(supabase, session)).includes(produtoDeGabarito(gabarito_id))) {
+      res.status(403).json({ error: 'Esse produto não está liberado pra sua conta. Fale com o administrador.' });
+      return;
+    }
 
     const insert = {
       numero_pedido, gabarito_id, gabarito_label, nome_arquivo, design_json, precisa_ajuda,
@@ -88,6 +111,8 @@ module.exports = async (req, res) => {
         insert.vendedora_id = session.uid;
         insert.cliente_id = clienteId;
         insert.status = 'aguardando_aprovacao_cliente';
+        // Token do link mágico — deixa a cliente aprovar direto pelo WhatsApp, sem precisar logar.
+        insert.approval_token = crypto.randomUUID();
       } else if (session.role === 'cliente' && session.vendedoraId) {
         insert.cliente_id = session.uid;
         insert.vendedora_id = session.vendedoraId;
@@ -102,16 +127,16 @@ module.exports = async (req, res) => {
     // "Mockups e Artes" da vendedora e o reenvio por WhatsApp. Só o fluxo de aprovação EXIGE
     // um mockup válido (sem ele não há o que o outro lado aprovar); fora dele, é best-effort.
     const match = /^data:([^;]+);base64,(.+)$/.exec(body.mockupDataUrl || '');
-    if (!match) {
-      if (insert.status) { res.status(400).json({ error: 'Mockup não gerado corretamente.' }); return; }
+    const mockupExt = match && ALLOWED_MOCKUP_MIME[match[1]];
+    if (!mockupExt) {
+      if (insert.status) { res.status(400).json({ error: 'Mockup precisa ser PNG ou JPEG.' }); return; }
     } else {
       const mime = match[1];
       const buffer = Buffer.from(match[2], 'base64');
       if (buffer.length > 4 * 1024 * 1024) {
         if (insert.status) { res.status(400).json({ error: 'Mockup muito grande.' }); return; }
       } else {
-        const ext = mime === 'image/png' ? 'png' : 'jpg';
-        const path = 'mockups/' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '.' + ext;
+        const path = 'mockups/' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '.' + mockupExt;
         const { error: upErr } = await supabase.storage.from('site-assets').upload(path, buffer, { contentType: mime, upsert: false });
         if (upErr) {
           if (insert.status) { res.status(500).json({ error: upErr.message }); return; }
@@ -161,12 +186,12 @@ module.exports = async (req, res) => {
       const isOwnerVendedora = session.role === 'vendedora' && row.vendedora_id === session.uid;
       if (session.role !== 'admin' && !isOwnerVendedora) { res.status(403).json({ error: 'Sem permissão.' }); return; }
       const match = /^data:([^;]+);base64,(.+)$/.exec(body.mockupDataUrl || '');
-      if (!match) { res.status(400).json({ error: 'Mockup não gerado corretamente.' }); return; }
+      const mockupExt = match && ALLOWED_MOCKUP_MIME[match[1]];
+      if (!mockupExt) { res.status(400).json({ error: 'Mockup precisa ser PNG ou JPEG.' }); return; }
       const mime = match[1];
       const buffer = Buffer.from(match[2], 'base64');
       if (buffer.length > 4 * 1024 * 1024) { res.status(400).json({ error: 'Mockup muito grande.' }); return; }
-      const ext = mime === 'image/png' ? 'png' : 'jpg';
-      const path = 'mockups/' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '.' + ext;
+      const path = 'mockups/' + Date.now() + '_' + Math.random().toString(36).slice(2, 8) + '.' + mockupExt;
       const { error: upErr } = await supabase.storage.from('site-assets').upload(path, buffer, { contentType: mime, upsert: false });
       if (upErr) { res.status(500).json({ error: upErr.message }); return; }
       const { data: pub } = supabase.storage.from('site-assets').getPublicUrl(path);
@@ -178,10 +203,13 @@ module.exports = async (req, res) => {
 
     const updates = {};
     if (action === 'aprovar' || action === 'reprovar') {
+      const isOwnerVendedora = session.role === 'vendedora' && row.vendedora_id === session.uid;
       if (row.status === 'aguardando_aprovacao_cliente') {
-        if (session.role !== 'cliente' || row.cliente_id !== session.uid) { res.status(403).json({ error: 'Sem permissão.' }); return; }
+        // Além da própria cliente, a vendedora dona do pedido e o admin podem aprovar/pedir ajuste
+        // em nome dela (ex: a cliente aprovou por WhatsApp/telefone) — aprovado_por registra quem foi.
+        const isOwnerCliente = session.role === 'cliente' && row.cliente_id === session.uid;
+        if (!isOwnerCliente && !isOwnerVendedora && session.role !== 'admin') { res.status(403).json({ error: 'Sem permissão.' }); return; }
       } else if (row.status === 'aguardando_aprovacao_vendedora') {
-        const isOwnerVendedora = session.role === 'vendedora' && row.vendedora_id === session.uid;
         if (!isOwnerVendedora && session.role !== 'admin') { res.status(403).json({ error: 'Sem permissão.' }); return; }
       } else {
         res.status(400).json({ error: 'Este pedido não está aguardando aprovação.' });
@@ -192,11 +220,13 @@ module.exports = async (req, res) => {
         updates.aprovado_por = session.uid;
         updates.aprovado_em = new Date().toISOString();
         updates.motivo_reprovacao = null;
+        updates.motivo_reprovacao_ponto = null;
       } else {
         const motivo = (body.motivo || '').trim().slice(0, 500);
         if (!motivo) { res.status(400).json({ error: 'Descreva o que precisa ajustar.' }); return; }
         updates.status = 'reprovado';
         updates.motivo_reprovacao = motivo;
+        updates.motivo_reprovacao_ponto = validPonto(body.ponto);
       }
     } else if (action === 'marcar_producao') {
       const isOwnerVendedora = session.role === 'vendedora' && row.vendedora_id === session.uid;
