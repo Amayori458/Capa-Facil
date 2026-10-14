@@ -55,6 +55,10 @@ async function loadFont(db, body) {
   if (body.fontData) {
     if (typeof body.fontData !== 'string' || body.fontData.length > 3600000 || !/^data:[^,]*;base64,[A-Za-z0-9+/=]+$/.test(body.fontData)) throw new Error('Arquivo de fonte inválido.');
     const buffer = Buffer.from(body.fontData.split(',')[1], 'base64');
+    // Só TTF/OTF/TTC crus: WOFF/WOFF2 são comprimidos e o tamanho descomprimido não é limitado
+    // pelo teto de base64 acima (bomba de descompressão).
+    const magic = buffer.subarray(0, 4).toString('latin1');
+    if (!['\x00\x01\x00\x00', 'OTTO', 'true', 'ttcf'].includes(magic)) throw new Error('Use uma fonte TTF ou OTF (WOFF não é aceito).');
     const key = 'data:' + crypto.createHash('sha1').update(buffer).digest('hex');
     if (fontCache.has(key)) return fontCache.get(key);
     return remember(key, parseFont(buffer));
