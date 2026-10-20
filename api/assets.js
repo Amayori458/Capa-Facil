@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
 const { getSupabase, requireAuth, readJsonBody } = require('./_auth');
 
 const EXT_BY_MIME = {
@@ -9,6 +10,47 @@ const EXT_BY_MIME = {
 
 const ICON_MIMES = ['image/svg+xml', 'image/png', 'image/webp', 'image/jpeg'];
 const TEAM_CATEGORY = 'Enviados pela equipe';
+
+
+// SVG enviado por vendedora é reconstruído só com o que é desenho: lista de permitidos (não de proibidos),
+// porque SVG tem muitas formas de rodar script (onload, <animate>, href javascript:, <use>, entidades…).
+// Fica o que desenha (formas, grupos, estilo simples); sai script, link, imagem, evento e qualquer url().
+const SVG_TAGS = new Set(['svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'defs', 'style', 'title', 'desc']);
+const SVG_ATTRS = new Set(['xmlns', 'version', 'viewBox', 'width', 'height', 'preserveAspectRatio', 'x', 'y', 'cx', 'cy', 'r', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2', 'points', 'd',
+  'transform', 'fill', 'fill-rule', 'clip-rule', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'stroke-opacity', 'stroke-dasharray',
+  'opacity', 'class', 'id', 'style', 'xml:space']);
+const UNSAFE_VALUE = /url\s*\(|javascript:|data:|expression\s*\(|@import|<|&#|&[a-z]+;/i;
+function sanitizeSvg(text) {
+  if (/<!ENTITY|<!\[CDATA\[[\s\S]*<script/i.test(text)) throw new Error('SVG inválido.');
+  let doc;
+  try {
+    const bad = () => { throw new Error('SVG inválido.'); };
+    doc = new DOMParser({ onError: bad }).parseFromString(text, 'image/svg+xml');
+  } catch (e) { throw new Error('Esse arquivo não é um SVG válido.'); }
+  const root = doc && doc.documentElement;
+  if (!root || root.localName !== 'svg') throw new Error('Esse arquivo não é um SVG válido.');
+  function clean(node) {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === 1) {
+        if (!SVG_TAGS.has(child.localName) || (child.namespaceURI && child.namespaceURI !== 'http://www.w3.org/2000/svg')) { node.removeChild(child); continue; }
+        for (const a of Array.from(child.attributes)) {
+          if (!SVG_ATTRS.has(a.name) || UNSAFE_VALUE.test(a.value)) child.removeAttribute(a.name);
+        }
+        if (child.localName === 'style' && UNSAFE_VALUE.test(child.textContent)) { node.removeChild(child); continue; }
+        clean(child);
+      } else if (child.nodeType === 3 || child.nodeType === 4) {
+        if (node.localName !== 'style' && node.localName !== 'title' && node.localName !== 'desc' && child.data.trim()) node.removeChild(child);
+        else if (UNSAFE_VALUE.test(child.data)) node.removeChild(child);
+      } else node.removeChild(child);   // comentários, instruções de processamento, doctype
+    }
+  }
+  for (const a of Array.from(root.attributes)) {
+    if (a.name !== 'xmlns' && (!SVG_ATTRS.has(a.name) || UNSAFE_VALUE.test(a.value))) root.removeAttribute(a.name);
+  }
+  clean(root);
+  if (!root.getAttribute('xmlns')) root.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  return new XMLSerializer().serializeToString(root);
+}
 
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
@@ -37,10 +79,11 @@ module.exports = async (req, res) => {
     if (!isAdmin && tipo !== 'icone') { res.status(403).json({ error: 'Só o admin pode enviar fontes.' }); return; }
     const mime = match[1];
     if (tipo === 'icone' && !ICON_MIMES.includes(mime)) { res.status(400).json({ error: 'Ícone precisa ser SVG, PNG, WebP ou JPG.' }); return; }
-    const buffer = Buffer.from(match[2], 'base64');
+    let buffer = Buffer.from(match[2], 'base64');
     if (buffer.length > 3 * 1024 * 1024) { res.status(400).json({ error: 'Arquivo muito grande (máx. 3MB).' }); return; }
-    if (mime === 'image/svg+xml' && /<script|<foreignObject|<iframe|\son[a-z]+\s*=|javascript:/i.test(buffer.toString('utf8'))) {
-      res.status(400).json({ error: 'Esse SVG tem script ou conteúdo embutido e não pode ir pra biblioteca.' }); return;
+    if (mime === 'image/svg+xml' && !isAdmin) {
+      try { buffer = Buffer.from(sanitizeSvg(buffer.toString('utf8')), 'utf8'); }
+      catch (e) { res.status(400).json({ error: e.message || 'SVG inválido.' }); return; }
     }
     const supabase = getSupabase();
     const sha1 = crypto.createHash('sha1').update(buffer).digest('hex');
@@ -97,3 +140,4 @@ module.exports = async (req, res) => {
 
   res.status(405).json({ error: 'Método não permitido.' });
 };
+module.exports.sanitizeSvg = sanitizeSvg;
