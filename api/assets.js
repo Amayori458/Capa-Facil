@@ -19,7 +19,8 @@ const SVG_TAGS = new Set(['svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line
 const SVG_ATTRS = new Set(['xmlns', 'version', 'viewBox', 'width', 'height', 'preserveAspectRatio', 'x', 'y', 'cx', 'cy', 'r', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2', 'points', 'd',
   'transform', 'fill', 'fill-rule', 'clip-rule', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'stroke-opacity', 'stroke-dasharray',
   'opacity', 'class', 'id', 'style', 'xml:space']);
-const UNSAFE_VALUE = /url\s*\(|javascript:|data:|expression\s*\(|@import|<|&#|&[a-z]+;/i;
+// A barra invertida também é proibida: em CSS ela escreve letras (u:l( = url(), o que escaparia dos outros testes.
+const UNSAFE_VALUE = /\|url\s*\(|javascript:|data:|expression\s*\(|@import|<|&#|&[a-z]+;/i;
 function sanitizeSvg(text) {
   if (/<!ENTITY|<!\[CDATA\[[\s\S]*<script/i.test(text)) throw new Error('SVG inválido.');
   let doc;

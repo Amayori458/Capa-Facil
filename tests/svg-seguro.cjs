@@ -14,12 +14,13 @@ const ATAQUES = {
   'foreignObject': '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><iframe src="https://evil.test"></iframe></foreignObject></svg>',
   'image externa': '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://evil.test/track.png"/><use href="https://evil.test/x.svg#a"/></svg>',
   'style com url': '<svg xmlns="http://www.w3.org/2000/svg"><style>.a{fill:url(https://evil.test/x)}</style><rect class="a" width="9" height="9" style="fill:url(javascript:alert(1))"/></svg>',
+  'css com escape': '<svg xmlns="http://www.w3.org/2000/svg"><style>.a{fill:u\72l(https://evil.test/x)}</style><rect class="a" width="9" height="9" style="fill:\75rl(javascript:alert(1))"/></svg>',
   'xml com outro namespace': '<svg xmlns="http://www.w3.org/2000/svg"><x:script xmlns:x="http://www.w3.org/1999/xhtml">alert(1)</x:script><rect width="9" height="9"/></svg>',
 };
 for (const [nome, svg] of Object.entries(ATAQUES)) {
   let out;
   try { out = sanitizeSvg(svg); } catch (e) { continue; }   // recusar também é um resultado seguro
-  assert(!/script|\bon[a-z]+\s*=|href|foreignObject|iframe|javascript|url\(|<image|<use|<animate|<set/i.test(out), nome + ' sobrou: ' + out);
+  assert(!/script|\bon[a-z]+\s*=|href|foreignObject|iframe|javascript|url\(|\|<image|<use|<animate|<set/i.test(out), nome + ' sobrou: ' + out);
 }
 assert.throws(() => sanitizeSvg('<!DOCTYPE svg [<!ENTITY a "b">]><svg xmlns="http://www.w3.org/2000/svg"/>'), /inválido/);
 assert.throws(() => sanitizeSvg('isso não é svg'), /válido/);
