@@ -268,6 +268,14 @@ async function browserTests() {
     const expected = { x: Math.min(...exported.items.map(i => i.x)), y: Math.min(...exported.items.map(i => i.y)), r: Math.max(...exported.items.map(i => i.x + i.w)), b: Math.max(...exported.items.map(i => i.y + i.h)) };
     // (a caixa da tinta é um pouco menor ou igual à caixa do elemento, nunca maior)
     assert(union.x >= expected.x - 0.5 && union.y >= expected.y - 0.5 && union.r <= expected.r + 0.5 && union.b <= expected.b + 0.5, 'export dentro da caixa do editor: ' + JSON.stringify({ union, expected }));
+    // formato AI (Illustrator): mesmo nome, extensão .ai, arquivo PDF-compatível
+    await page.locator('[data-format]').selectOption('ai');
+    const aiP = page.waitForEvent('download');
+    await page.locator('[data-export]').click();
+    const ai = await aiP;
+    assert.equal(ai.suggestedFilename(), 'gravacao-48213-eduardo-e-thais-courino-200x200mm.ai');
+    assert.equal(fs.readFileSync(await ai.path()).subarray(0, 5).toString(), '%PDF-');
+    await page.locator('[data-format]').selectOption('svg');
     // prévia PNG
     const pngP = page.waitForEvent('download');
     await page.locator('[data-png]').click();

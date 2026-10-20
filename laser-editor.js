@@ -371,6 +371,68 @@ window.LaserEditor = (() => {
       '<svg xmlns="' + NS + '" width="' + f3(state.width) + 'mm" height="' + f3(state.height) + 'mm" viewBox="0 0 ' + f3(state.width) + ' ' + f3(state.height) + '">\n' +
       '<title>' + esc(title) + '</title>\n<g id="gravacao">\n' + paths.join('\n') + '\n</g>\n</svg>\n';
   }
+  /* ---------------------------------- saída em AI (Illustrator) ---------------------------------- */
+  // O arquivo vai pra máquina em .AI (hoje: SVG → Illustrator → .ai). Este .ai é PDF-compatível, o mesmo
+  // tipo que o Illustrator CC grava em "Salvar como .ai"; abre no Illustrator 2026 com a prancheta no
+  // tamanho da área e furos como caminhos compostos. Só curvas pretas, em pontos (1 pt = 1/72"),
+  // origem no canto inferior esquerdo.
+  // (Foi tentado também o Illustrator 8 em texto, igual aos "…máquina laser nova.ai" do CorelDRAW: o
+  // Illustrator recusou o gerado, então não foi incluído — sem como testar na máquina.)
+  const PT = 72 / 25.4;
+  function flattenItems(state) {
+    const out = [];
+    state.items.forEach(item => {
+      const m = itemMatrix(item), k = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c));
+      item.paths.forEach(p => out.push({ segs: transformSegs(parsePathData(p.d), m), fill: p.fill, rule: p.rule, stroke: p.stroke * k }));
+    });
+    return out;
+  }
+  // Q (quadrática) vira C (cúbica) — PDF e AI não têm curva quadrática.
+  function* cubicSegments(segs) {
+    let cx = 0, cy = 0, sx = 0, sy = 0;
+    for (const s of segs) {
+      if (s[0] === 'M') { sx = cx = s[1]; sy = cy = s[2]; yield ['M', cx, cy]; }
+      else if (s[0] === 'L') { cx = s[1]; cy = s[2]; yield ['L', cx, cy]; }
+      else if (s[0] === 'C') { cx = s[5]; cy = s[6]; yield s; }
+      else if (s[0] === 'Q') {
+        yield ['C', cx + 2 / 3 * (s[1] - cx), cy + 2 / 3 * (s[2] - cy), s[3] + 2 / 3 * (s[1] - s[3]), s[4] + 2 / 3 * (s[2] - s[4]), s[3], s[4]];
+        cx = s[3]; cy = s[4];
+      } else { cx = sx; cy = sy; yield s; }
+    }
+  }
+  const asciiTitle = t => normalizeSearch(t).replace(/[^\x20-\x7e]/g, '').replace(/[()\\]/g, '').slice(0, 80) || 'gravacao';
+  function buildPdfAi(state) {
+    const W = state.width * PT, H = state.height * PT;
+    const n = v => String(+v.toFixed(3)), X = x => n(x * PT), Y = y => n(H - y * PT);
+    let ops = '0 g 0 G\n';
+    flattenItems(state).forEach(p => {
+      if (p.stroke) ops += n(p.stroke * PT) + ' w\n';
+      for (const s of cubicSegments(p.segs)) {
+        if (s[0] === 'M') ops += X(s[1]) + ' ' + Y(s[2]) + ' m\n';
+        else if (s[0] === 'L') ops += X(s[1]) + ' ' + Y(s[2]) + ' l\n';
+        else if (s[0] === 'C') ops += X(s[1]) + ' ' + Y(s[2]) + ' ' + X(s[3]) + ' ' + Y(s[4]) + ' ' + X(s[5]) + ' ' + Y(s[6]) + ' c\n';
+        else ops += 'h\n';
+      }
+      const eo = p.rule === 'evenodd' ? '*' : '';
+      ops += (p.fill && p.stroke ? 'B' : p.fill ? 'f' : 'S') + (p.fill ? eo : '') + '\n';
+    });
+    const title = asciiTitle('Gravacao ' + MATERIALS[state.material] + ' ' + state.ident);
+    const objs = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + n(W) + ' ' + n(H) + '] /Contents 4 0 R /Resources << >> >>',
+      '<< /Length ' + ops.length + ' >>\nstream\n' + ops + 'endstream',
+      '<< /Title (' + title + ') /Creator (Capa Facil - gravacao a laser) /Producer (Capa Facil) >>',
+    ];
+    let out = '%PDF-1.5\n%\xE2\xE3\xCF\xD3\n';
+    const offsets = objs.map((o, i) => { const at = out.length; out += (i + 1) + ' 0 obj\n' + o + '\nendobj\n'; return at; });
+    const xref = out.length;
+    out += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n' + offsets.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('') +
+      'trailer\n<< /Size ' + (objs.length + 1) + ' /Root 1 0 R /Info 5 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+    const bytes = new Uint8Array(out.length);
+    for (let i = 0; i < out.length; i++) bytes[i] = out.charCodeAt(i) & 255;
+    return bytes;
+  }
   // Situação de cada elemento em relação à área: erro = passa da área (bloqueia o export), aviso = passa da margem.
   function itemIssue(state, item) {
     const box = itemAABB(item), eps = 0.01;
@@ -409,7 +471,9 @@ window.LaserEditor = (() => {
         '<button type="button" class="btn" data-undo title="Desfazer (Ctrl+Z)">Desfazer</button>' +
         '<button type="button" class="btn" data-redo title="Refazer (Ctrl+Shift+Z)">Refazer</button>' +
         '<button type="button" class="btn" data-png>Prévia PNG</button>' +
-        '<button type="button" class="btn primary" data-export>' + iconHtml('download') + ' Exportar SVG</button>' +
+        '<select data-format class="le-format" aria-label="Formato do arquivo" title="SVG: abre em qualquer programa. AI: arquivo do Illustrator (PDF-compatível), pronto pra mandar pra máquina.">' +
+          '<option value="svg">SVG</option><option value="ai">AI (Illustrator)</option></select>' +
+        '<button type="button" class="btn primary" data-export>' + iconHtml('download') + ' Exportar</button>' +
       '</header>' +
       '<div class="le-body">' +
         '<aside class="le-side">' +
@@ -952,6 +1016,8 @@ window.LaserEditor = (() => {
       else if (t.matches('[data-ih]') && v > 0) { const c = itemCenter(item); item.w = Math.max(0.5, v * item.bounds.w / item.bounds.h); item.x = c.x - item.w / 2; item.y = c.y - itemH(item) / 2; commit(); }
       else if (t.matches('[data-rot]') && Number.isFinite(v)) { const c = itemCenter(item); item.rot = ((v + 180) % 360 + 360) % 360 - 180; item.x = c.x - item.w / 2; item.y = c.y - itemH(item) / 2; commit(); }
     });
+    try { const f = localStorage.getItem('capabuilder:laser:format'); if (f && ['svg', 'ai'].includes(f)) q('[data-format]').value = f; } catch (e) { /* sem armazenamento: fica no SVG */ }
+    q('[data-format]').addEventListener('change', e => { try { localStorage.setItem('capabuilder:laser:format', e.target.value); } catch (err) { /* ok */ } });
     q('[data-upload-label]').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); q('[data-upload]').click(); } });
     const applyZoom = () => render();
 
@@ -969,10 +1035,14 @@ window.LaserEditor = (() => {
     async function exportSvg() {
       await options.api('/api/laser'); // confirma que a conta ainda tem o produto liberado
       checkBeforeExport();
-      downloadBlob(new Blob([buildSvg(state)], { type: 'image/svg+xml' }), exportName(state));
+      const format = q('[data-format]').value;
+      const name = exportName(state);
+      if (format === 'ai') downloadBlob(new Blob([buildPdfAi(state)], { type: 'application/illustrator' }), name.replace(/\.svg$/, '.ai'));
+      else downloadBlob(new Blob([buildSvg(state)], { type: 'image/svg+xml' }), name);
+      const label = { svg: 'SVG', ai: 'AI (Illustrator)' }[format];
       const warn = state.items.filter(i => itemIssue(state, i) === 'warn').length;
-      setStatus('SVG exportado em milímetros, só com curvas.' + (warn ? ' Atenção: ' + warn + ' elemento(s) ficaram fora da margem.' : ''), warn ? 'warn' : 'ok');
-      toast('SVG exportado.', 'success');
+      setStatus(label + ' exportado, só com curvas pretas, no tamanho da área.' + (warn ? ' Atenção: ' + warn + ' elemento(s) ficaram fora da margem.' : ''), warn ? 'warn' : 'ok');
+      toast(label + ' exportado.', 'success');
     }
     async function exportPng() {
       checkBeforeExport();
@@ -997,5 +1067,5 @@ window.LaserEditor = (() => {
     new ResizeObserver(() => { if (document.body.contains(host) && !drag) render(); }).observe(q('[data-stage]'));
   }
 
-  return { open, hasDraft, sanitizeIcon, buildSvg, itemAABB, itemIssue, cleanState, parsePathData };
+  return { open, hasDraft, sanitizeIcon, buildSvg, buildPdfAi, flattenItems, itemAABB, itemIssue, cleanState, parsePathData };
 })();

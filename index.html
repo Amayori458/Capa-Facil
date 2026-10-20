@@ -2136,17 +2136,14 @@ async function flagPedidoForHelp(){
     showToast('Informe o número do pedido antes de pedir ajuda.');
     return;
   }
-  const designJson = {
-    layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }),
-    background, pedido, coverMode,
-  };
   const btn = document.getElementById('guided-ask-help');
   if (btn) setBtnLoading(btn, true, 'Avisando…');
   try {
-    await apiFetch('/api/pedidos', { method: 'POST', body: JSON.stringify({
-      numeroPedido: pedido.trim(), gabaritoId: gabarito.id, gabaritoLabel: gabarito.label,
-      nomeArquivo: null, designJson, precisaAjuda: true,
-    }) });
+    const bodyText = await fitPayload(() => ({
+      numeroPedido: pedido.trim(), gabaritoId: gabarito.id, gabaritoLabel: gabarito.label, nomeArquivo: null, precisaAjuda: true,
+      designJson: { layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }), background, pedido, coverMode },
+    }));
+    await apiFetch('/api/pedidos', { method: 'POST', body: bodyText });
     showToast('Pedido marcado — nossa equipe vai entrar em contato.', 'success');
   } catch (err) {
     showToast('Não foi possível avisar a equipe agora: ' + err.message, 'error');
@@ -2209,9 +2206,15 @@ function autosave(){
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
     const data = { layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }), background, pedido, coverMode, guidedMode, guidedStep };
-    localStorage.setItem(draftKey(gabarito.id), JSON.stringify(data));
+    try { localStorage.setItem(draftKey(gabarito.id), JSON.stringify(data)); }
+    catch (e) {
+      // Fotos pesadas podem estourar a cota do navegador (~5MB): o rascunho não é salvo, mas o trabalho
+      // continua na tela e o envio funciona. Avisa uma vez só, pra não irritar.
+      if (!autosaveWarned) { autosaveWarned = true; showToast('Rascunho grande demais pra guardar neste navegador — envie ou exporte antes de sair.', 'error'); }
+    }
   }, 350);
 }
+let autosaveWarned = false;
 
 /* ============================== GEOMETRIA / MEDIÇÃO DE TEXTO ============================== */
 function textLines(layer){ return String(layer.content || '').split('\n'); }
@@ -2754,7 +2757,33 @@ function drawIconLayer(c, layer, scaleFn){
     const cx = fx + fw/2, cy = fy + fh/2;
     c.translate(cx, cy); c.rotate(layer.rotation * Math.PI/180); c.translate(-cx, -cy);
   }
+  if (layer.shadow && layer.shadow.enabled) drawIconShadow(c, layer, scaleFn, fx, fy, fw, fh);
   c.drawImage(tintedIconSource(layer), fx, fy, fw, fh);
+  c.restore();
+}
+// Sombra do ícone: silhueta na cor da sombra, deslocada e desfocada, com força (opacidade) própria.
+// O "shadowBlur" nativo do canvas espalha tanta energia que ícone fino quase não mostra sombra; assim
+// o desfoque não apaga o traço e a força é controlável. A direção da sombra é fixa (não gira com o ícone).
+const ICON_SHADOW_DEFAULT = { enabled:false, color:'#000000', blur:1.2, dx:0.8, dy:1.2, opacity:0.7 };
+function drawIconShadow(c, layer, scaleFn, fx, fy, fw, fh){
+  const sh = layer.shadow, src = tintedIconSource(layer);
+  const alpha = sh.opacity == null ? ICON_SHADOW_DEFAULT.opacity : clamp(sh.opacity, 0, 1);
+  const blurPx = Math.max(0, scaleFn(sh.blur)), pad = Math.ceil(blurPx * 2) + 2;
+  const w = Math.max(1, Math.ceil(fw)) + pad * 2, h = Math.max(1, Math.ceil(fh)) + pad * 2;
+  const buf = document.createElement('canvas'); buf.width = w; buf.height = h;
+  const b = buf.getContext('2d');
+  b.drawImage(src, pad, pad, fw, fh);
+  b.globalCompositeOperation = 'source-in';
+  b.fillStyle = sh.color || '#000000';
+  b.fillRect(0, 0, w, h);
+  // desloca no sentido "da tela": desfaz o giro do ícone no vetor de deslocamento
+  const rad = (layer.rotation || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const dx = scaleFn(sh.dx), dy = scaleFn(sh.dy);
+  const ox = dx * cos + dy * sin, oy = -dx * sin + dy * cos;
+  c.save();
+  c.globalAlpha = c.globalAlpha * alpha;
+  if ('filter' in c && blurPx > 0) c.filter = 'blur(' + (blurPx / 2).toFixed(2) + 'px)';
+  c.drawImage(buf, fx - pad + ox, fy - pad + oy);
   c.restore();
 }
 function addIconLayer(src, natW, natH, label){
@@ -2767,6 +2796,7 @@ function addIconLayer(src, natW, natH, label){
     id: uid('ico'), type:'icon', name: label || 'Ícone importado',
     x: g.w/2 - w/2, y: g.h/2 - h/2, w, h, src, natW, natH,
     opacity:1, rotation:0, tintColor:null, visible:true, locked:false,
+    shadow: Object.assign({}, ICON_SHADOW_DEFAULT),
   };
   layer._img = loadImageSync(src);
   layers.push(layer);
@@ -3655,8 +3685,8 @@ function renderEnfeitesPanel(){
   }
   html += '<div class="divider-tiny"></div>';
   html += '<h2>Importar</h2>';
-  html += '<button class="btn small" id="btn-import-icon" style="width:100%">＋ Importar ícone (SVG, PNG)</button>';
-  html += '<input type="file" id="file-icon-import" accept="image/svg+xml,image/png,image/webp,image/jpeg" hidden>';
+  html += '<button class="btn small" id="btn-import-icon" style="width:100%">＋ Importar ícone (SVG, PNG, JPG)</button>';
+  html += '<input type="file" id="file-icon-import" accept="image/svg+xml,.svg,image/png,image/webp,image/jpeg,image/gif,.png,.webp,.jpg,.jpeg,.gif" hidden>';
   html += '<p class="hint" style="margin-top:6px">Envie um ícone próprio — depois é possível mover, redimensionar e rotacionar como qualquer enfeite.</p>';
   html += '</div>';
   panel.innerHTML = html;
@@ -3682,20 +3712,64 @@ function renderEnfeitesPanel(){
 
   const iconInput = document.getElementById('file-icon-import');
   document.getElementById('btn-import-icon').addEventListener('click', () => iconInput.click());
-  iconInput.addEventListener('change', (e) => {
+  iconInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
-    if (!file) return;
-    if (file.size > 3*1024*1024) { showToast('Ícone muito grande (máx. 3MB).'); e.target.value = ''; return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => { addIconLayer(reader.result, img.naturalWidth, img.naturalHeight, file.name.replace(/\.[^.]+$/, '')); };
-      img.onerror = () => showToast('Não foi possível ler esse arquivo como imagem.');
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
     e.target.value = '';
+    if (!file) return;
+    try {
+      const r = await prepareIconFile(file);
+      const label = file.name.replace(/\.[^.]+$/, '');
+      addIconLayer(r.src, r.w, r.h, label);
+      shareImportedIcon(r.src, label);
+    } catch (err) { showToast(err.message, 'error'); }
   });
+}
+// Ícone que a vendedora importa fica guardado na biblioteca da equipe ("Enviados pela equipe") pra todo
+// mundo usar depois. Roda em segundo plano: se falhar, o ícone continua na capa dela e só avisa.
+async function shareImportedIcon(src, label){
+  if (!currentUser || currentUser.role !== 'vendedora') return;
+  try {
+    const { duplicado } = await apiFetch('/api/assets', { method: 'POST', body: JSON.stringify({ tipo: 'icone', nome: label, dataUrl: src }) });
+    await loadSiteAssets();
+    if (typeof renderEnfeitesPanel === 'function') renderEnfeitesPanel();
+    if (!duplicado) showToast('Ícone "' + label + '" guardado na biblioteca da equipe — todo mundo já pode usar.', 'success');
+  } catch (err) {
+    showToast('O ícone está na capa, mas não foi guardado na biblioteca: ' + err.message);
+  }
+}
+// Lê o arquivo escolhido e devolve { src, w, h } pronto pra virar camada. Aceita SVG (vetor, fica como
+// veio — só ganha o que faltar pro navegador conseguir abrir) e imagens PNG/WebP/JPG/GIF, que são
+// reduzidas aqui (o ícone cabe em poucos mm na capa; o arquivo original pode ter vários MB).
+const ICON_FILE_MAX_SVG = 3 * 1024 * 1024, ICON_FILE_MAX_RASTER = 30 * 1024 * 1024;
+function readFileAsDataUrl(file){
+  return new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = () => reject(new Error('Não foi possível ler o arquivo.')); r.readAsDataURL(file); });
+}
+async function prepareIconFile(file){
+  const isSvg = file.type === 'image/svg+xml' || /\.svg$/i.test(file.name);
+  const isRaster = /^image\/(png|webp|jpeg|gif|bmp)$/.test(file.type) || /\.(png|webp|jpe?g|gif|bmp)$/i.test(file.name);
+  if (!isSvg && !isRaster) throw new Error('Formato não suportado: use SVG, PNG, WebP ou JPG. Arquivos AI, CDR, EPS e PDF precisam ser exportados como SVG ou PNG antes.');
+  if (isSvg) {
+    if (file.size > ICON_FILE_MAX_SVG) throw new Error('SVG muito pesado (máx. 3MB). Simplifique o desenho ou exporte como PNG.');
+    let text = await file.text();
+    const tag = /<svg\b[^>]*>/i.exec(text);
+    if (!tag) throw new Error('Esse arquivo não é um SVG válido.');
+    let open = tag[0];
+    // sem xmlns o navegador se recusa a abrir como imagem; sem width/height o tamanho varia por navegador
+    if (!/\sxmlns\s*=/.test(open)) open = open.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+    const vb = /viewBox\s*=\s*["']\s*([-\d.eE]+)[\s,]+([-\d.eE]+)[\s,]+([-\d.eE]+)[\s,]+([-\d.eE]+)/i.exec(open);
+    const hasSize = /\swidth\s*=\s*["'][\d.]+/i.test(open) && /\sheight\s*=\s*["'][\d.]+/i.test(open);
+    if (vb && !hasSize) open = open.replace(/\s(width|height)\s*=\s*["'][^"']*["']/gi, '').replace(/<svg\b/i, '<svg width="' + (+vb[3]) + '" height="' + (+vb[4]) + '"');
+    text = text.replace(tag[0], open);
+    const src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(text)));
+    const img = await loadImageFromSrc(src);
+    if (!img) throw new Error('Não foi possível ler esse SVG como imagem. Abra no Illustrator/Corel/Inkscape e exporte de novo como SVG.');
+    const w = img.naturalWidth || (vb ? +vb[3] : 100), h = img.naturalHeight || (vb ? +vb[4] : 100);
+    return { src, w, h };
+  }
+  if (file.size > ICON_FILE_MAX_RASTER) throw new Error('Imagem muito grande (máx. 30MB).');
+  const img = await loadImageFromSrc(await readFileAsDataUrl(file));
+  if (!img || !img.naturalWidth) throw new Error('Não foi possível ler esse arquivo como imagem.');
+  return rasterizeIcon(img, ICON_MAX_DIM, ICON_MAX_BYTES);
 }
 
 /* ============================== SELETOR DE COR (hex + paleta) ============================== */
@@ -4105,6 +4179,25 @@ function renderDesignPalette(){
   html += '</div></div>';
   return html;
 }
+// Sombra: mesmo controle pro texto e pro ícone. Camadas antigas (rascunhos/pedidos salvos antes de
+// o ícone ter sombra) não têm o bloco, então ele é criado desligado na hora de abrir o painel.
+function shadowControlsHtml(sel){
+  const isIcon = sel.type === 'icon';
+  if (!sel.shadow) sel.shadow = isIcon ? Object.assign({}, ICON_SHADOW_DEFAULT) : { enabled:false, color:'#000000', blur:1.5, dx:0, dy:0.6 };
+  let html = '<label class="checkline"><input type="checkbox" id="p-shadow-on" ' + (sel.shadow.enabled?'checked':'') + '> Sombra</label>';
+  if (sel.shadow.enabled && isIcon) {
+    const op = Math.round((sel.shadow.opacity == null ? ICON_SHADOW_DEFAULT.opacity : sel.shadow.opacity) * 100);
+    html += '<div class="prop-row"><div><label>Cor da sombra</label>' + colorSwatchHtml('p-shadow-color', sel.shadow.color) + '</div>' +
+      '<div><label>Desfoque (mm)</label><input type="number" id="p-shadow-blur" min="0" max="10" step="0.5" value="' + sel.shadow.blur + '"></div></div>' +
+      '<div class="prop-row"><div><label>Distância → (mm)</label><input type="number" id="p-shadow-dx" min="-10" max="10" step="0.5" value="' + sel.shadow.dx + '"></div>' +
+      '<div><label>Distância ↓ (mm)</label><input type="number" id="p-shadow-dy" min="-10" max="10" step="0.5" value="' + sel.shadow.dy + '"></div></div>' +
+      '<div class="prop-row"><div><label>Força da sombra (' + op + '%)</label><input type="range" id="p-shadow-opacity" min="10" max="100" value="' + op + '"></div></div>';
+  } else if (sel.shadow.enabled) {
+    html += '<div class="prop-row"><div><label>Cor da sombra</label>' + colorSwatchHtml('p-shadow-color', sel.shadow.color) + '</div>' +
+      '<div><label>Desfoque (mm)</label><input type="number" id="p-shadow-blur" min="0" max="10" step="0.5" value="' + sel.shadow.blur + '"></div></div>';
+  }
+  return html;
+}
 function renderPropsPanel(){
   const panel = document.getElementById('props-panel');
   const sel = layers.find(l => l.id === selectedId);
@@ -4133,11 +4226,7 @@ function renderPropsPanel(){
         html += '<label class="checkline"><input type="checkbox" id="p-main-name" ' + (sel.mainName?'checked':'') + '> É o nome principal da capa</label>';
         if (sel.mainName) html += '<p class="hint">Nenhum outro texto pode ficar do mesmo tamanho ou maior que este — a exportação fica bloqueada até o nome principal ser o maior.</p>';
       }
-      html += '<label class="checkline"><input type="checkbox" id="p-shadow-on" ' + (sel.shadow.enabled?'checked':'') + '> Sombra</label>';
-      if (sel.shadow.enabled) {
-        html += '<div class="prop-row"><div><label>Cor da sombra</label>' + colorSwatchHtml('p-shadow-color', sel.shadow.color) + '</div>' +
-          '<div><label>Desfoque (mm)</label><input type="number" id="p-shadow-blur" min="0" max="10" step="0.5" value="' + sel.shadow.blur + '"></div></div>';
-      }
+      html += shadowControlsHtml(sel);
       html += '<div class="prop-row"><div><label>Rotação (°)</label><input type="number" id="p-rotation" min="-180" max="180" step="1" value="' + Math.round(sel.rotation||0) + '"></div></div>';
       html += '<p class="hint">Ou arraste a alça ↻ acima do texto na tela (Shift trava de 15 em 15°).</p>';
       if (sel.spine) {
@@ -4218,6 +4307,7 @@ function renderPropsPanel(){
         html += '<div class="prop-row"><div><label>Cor</label>' + colorSwatchHtml('p-tint-color', sel.tintColor) + '</div></div>';
         html += '<p class="hint">Funciona melhor em ícones com fundo transparente (PNG ou SVG).</p>';
       }
+      html += shadowControlsHtml(sel);
       html += '<div class="prop-row"><div><label>Rotação (°)</label><input type="number" id="p-rotation" min="-180" max="180" step="1" value="' + Math.round(sel.rotation||0) + '"></div></div>';
       html += '<p class="hint">Ou arraste a alça ↻ acima do ícone na tela (Shift trava de 15 em 15°).</p>';
     }
@@ -4267,6 +4357,9 @@ function wirePropsPanel(sel){
   wireColorSwatch('p-tint-color', hex => { sel.tintColor = hex; render(); }, () => afterMutate());
   wireColorSwatch('p-shadow-color', hex => { sel.shadow.color = hex; render(); }, () => afterMutate());
   const shBlur = $('p-shadow-blur'); if (shBlur) shBlur.addEventListener('change', e => { sel.shadow.blur = +e.target.value; afterMutate(); });
+  const shDx = $('p-shadow-dx'); if (shDx) shDx.addEventListener('change', e => { sel.shadow.dx = +e.target.value; afterMutate(); });
+  const shDy = $('p-shadow-dy'); if (shDy) shDy.addEventListener('change', e => { sel.shadow.dy = +e.target.value; afterMutate(); });
+  const shOp = $('p-shadow-opacity'); if (shOp) { shOp.addEventListener('input', e => { sel.shadow.opacity = (+e.target.value) / 100; render(); }); shOp.addEventListener('change', () => { renderPropsPanel(); afterMutate(); }); }
 
   document.querySelectorAll('[data-t]').forEach(btn => btn.addEventListener('click', () => {
     const t = btn.getAttribute('data-t'); sel[t] = !sel[t]; renderPropsPanel(); afterMutate();
@@ -4838,10 +4931,11 @@ const PHOTO_MAX_DIM = 3000;
 // (submitForApproval manda tudo junto), 2×1.3MB = 2.6MB deixa uns ~1.5MB de folga real sob o
 // limite de 4.5MB da Vercel pro mockup e o resto do design_json.
 const PHOTO_MAX_BYTES = 1.3 * 1024 * 1024;
-function downscaleImageIfNeeded(img, maxDim){
+function downscaleImageIfNeeded(img, maxDim, maxBytes){
+  maxBytes = maxBytes || PHOTO_MAX_BYTES;
   return new Promise((resolve) => {
     const longest = Math.max(img.naturalWidth, img.naturalHeight);
-    if (longest <= maxDim && img.src.length <= PHOTO_MAX_BYTES) {
+    if (longest <= maxDim && img.src.length <= maxBytes) {
       resolve({ src: img.src, img, w: img.naturalWidth, h: img.naturalHeight }); return;
     }
     const scale = Math.min(1, maxDim / longest);
@@ -4853,12 +4947,12 @@ function downscaleImageIfNeeded(img, maxDim){
     // baixa a qualidade em passos até caber no orçamento, em vez de confiar numa qualidade fixa.
     let dataUrl = c.toDataURL('image/jpeg', 0.85);
     [0.7, 0.55, 0.4].some(q => {
-      if (dataUrl.length <= PHOTO_MAX_BYTES) return true;
+      if (dataUrl.length <= maxBytes) return true;
       dataUrl = c.toDataURL('image/jpeg', q);
       return false;
     });
     // Último recurso (raro — praticamente só ruído puro/incompressível chega aqui): reduz também a dimensão.
-    if (dataUrl.length > PHOTO_MAX_BYTES) {
+    if (dataUrl.length > maxBytes) {
       w = Math.round(w * 0.7); h = Math.round(h * 0.7);
       const c2 = document.createElement('canvas');
       c2.width = w; c2.height = h;
@@ -4870,6 +4964,54 @@ function downscaleImageIfNeeded(img, maxDim){
     smallImg.onerror = () => resolve({ src: img.src, img, w: img.naturalWidth, h: img.naturalHeight });
     smallImg.src = dataUrl;
   });
+}
+// ---- Tamanho do envio -------------------------------------------------------------------------
+// A Vercel recusa corpo de requisição acima de ~4,5MB ("Erro 413"). Fotos já entram reduzidas, mas
+// ícone importado, foto trocada por outro caminho ou várias camadas pesadas ainda estouram. Antes de
+// enviar, mede o corpo e, se passar do teto, recomprime as imagens das camadas em passos até caber —
+// e, se mesmo assim não couber, avisa em português em vez de mostrar "Erro 413".
+const PAYLOAD_LIMIT = 4.0 * 1024 * 1024;
+const ICON_MAX_DIM = 1200, ICON_MAX_BYTES = 600 * 1024;
+// Ícone raster (PNG/WebP/JPG) mantém transparência: sempre PNG, reduzindo o tamanho em passos.
+function rasterizeIcon(img, maxDim, maxBytes){
+  let scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+  let out = null;
+  for (let i = 0; i < 5; i++) {
+    const w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    out = { src: c.toDataURL('image/png'), w, h };
+    if (out.src.length <= maxBytes) break;
+    scale *= 0.75;
+  }
+  return out;
+}
+function loadImageFromSrc(src){
+  return new Promise(resolve => { const im = new Image(); im.onload = () => resolve(im); im.onerror = () => resolve(null); im.src = src; });
+}
+async function shrinkLayerImages(maxDim, maxBytes){
+  for (const l of layers) {
+    if ((l.type !== 'image' && l.type !== 'icon') || typeof l.src !== 'string') continue;
+    if (!l.src.startsWith('data:image/') || l.src.startsWith('data:image/svg') || l.src.length <= maxBytes) continue;
+    const img = await loadImageFromSrc(l.src);
+    if (!img || !img.naturalWidth) continue;
+    const r = l.type === 'icon' ? rasterizeIcon(img, maxDim, maxBytes) : await downscaleImageIfNeeded(img, maxDim, maxBytes);
+    if (!r || r.src.length >= l.src.length) continue;
+    // posições de rosto são em pixels da foto: acompanham a nova resolução
+    if (l.facesRaw && l.natW) { const k = r.w / l.natW; l.facesRaw = l.facesRaw.map(f => Object.assign({}, f, { x: f.x * k, y: f.y * k, w: f.w * k, h: f.h * k })); }
+    l.src = r.src; l.natW = r.w; l.natH = r.h;
+    l._img = (await loadImageFromSrc(r.src)) || l._img;
+  }
+}
+async function fitPayload(makeBody){
+  let text = JSON.stringify(makeBody());
+  if (text.length <= PAYLOAD_LIMIT) return text;
+  for (const [dim, bytes] of [[2400, 900 * 1024], [1800, 600 * 1024], [1400, 400 * 1024]]) {
+    await shrinkLayerImages(dim, bytes);
+    text = JSON.stringify(makeBody());
+    if (text.length <= PAYLOAD_LIMIT) { render(); return text; }
+  }
+  throw new Error('as fotos e ícones deste pedido estão pesados demais para enviar. Troque as fotos por versões menores (ou remova algum ícone importado) e tente de novo.');
 }
 function handlePhotoFile(file){
   if (!file || !file.type.startsWith('image/')) { showToast('Solte uma imagem (JPG, PNG…).', 'error'); return; }
@@ -5226,18 +5368,17 @@ async function apiFetch(url, opts){
   const res = await fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
   let body = null;
   try { body = await res.json(); } catch (e) {}
+  if (res.status === 413) throw new Error('o envio ficou grande demais (fotos ou ícones muito pesados). Troque por versões menores e tente de novo.');
   if (!res.ok) throw new Error((body && body.error) || ('Erro ' + res.status));
   return body;
 }
 async function recordPedido(nomeArquivo){
-  const designJson = {
-    layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }),
-    background, pedido, coverMode,
-  };
   const mockupDataUrl = mockupToDataUrl();
-  await apiFetch('/api/pedidos', { method: 'POST', body: JSON.stringify({
-    numeroPedido: pedido.trim(), gabaritoId: gabarito.id, gabaritoLabel: gabarito.label, nomeArquivo, designJson, mockupDataUrl,
-  }) });
+  const bodyText = await fitPayload(() => ({
+    numeroPedido: pedido.trim(), gabaritoId: gabarito.id, gabaritoLabel: gabarito.label, nomeArquivo, mockupDataUrl,
+    designJson: { layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }), background, pedido, coverMode },
+  }));
+  await apiFetch('/api/pedidos', { method: 'POST', body: bodyText });
 }
 
 /* ============================== APROVAÇÃO: mockup simples + envio ============================== */
@@ -5359,16 +5500,16 @@ async function submitForApproval(){
   [btn, guidedBtn].forEach(b => { if (b) setBtnLoading(b, true, 'Enviando…'); });
   try {
     const mockupDataUrl = mockupToDataUrl();
-    const designJson = {
-      layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }),
-      background, pedido, coverMode,
-    };
-    const body = {
-      numeroPedido: pedido.trim(), gabaritoId: gabarito.id, gabaritoLabel: gabarito.label,
-      nomeArquivo: null, designJson, mockupDataUrl, forApproval: true,
-    };
-    if (currentUser.role === 'vendedora') body.clienteId = selectedClienteId;
-    await apiFetch('/api/pedidos', { method: 'POST', body: JSON.stringify(body) });
+    const bodyText = await fitPayload(() => {
+      const body = {
+        numeroPedido: pedido.trim(), gabaritoId: gabarito.id, gabaritoLabel: gabarito.label, nomeArquivo: null,
+        designJson: { layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }), background, pedido, coverMode },
+        mockupDataUrl, forApproval: true,
+      };
+      if (currentUser.role === 'vendedora') body.clienteId = selectedClienteId;
+      return body;
+    });
+    await apiFetch('/api/pedidos', { method: 'POST', body: bodyText });
     localStorage.removeItem(draftKey(gabarito.id));
     showToast('Enviado para aprovação!', 'success');
     document.querySelectorAll('.screen').forEach(s => s.hidden = true);
@@ -5394,13 +5535,11 @@ document.getElementById('btn-save-template').addEventListener('click', async () 
   const btn = document.getElementById('btn-save-template');
   setBtnLoading(btn, true, 'Salvando…');
   try {
-    const designJson = serializeDesignForTemplate({
-      layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }),
-      background, coverMode,
-    });
-    await apiFetch('/api/modelos', { method: 'POST', body: JSON.stringify({
-      nome, gabaritoId: gabarito.id, gabaritoLabel: gabarito.label, designJson,
-    }) });
+    const bodyText = await fitPayload(() => ({
+      nome, gabaritoId: gabarito.id, gabaritoLabel: gabarito.label,
+      designJson: serializeDesignForTemplate({ layers: layers.map(l => { const c = Object.assign({}, l); delete c._img; return c; }), background, coverMode }),
+    }));
+    await apiFetch('/api/modelos', { method: 'POST', body: bodyText });
     showToast('Modelo "' + nome + '" salvo — reaproveite em Meus Modelos.', 'success');
   } catch (err) {
     showToast(err.message, 'error');
@@ -6289,6 +6428,8 @@ const PEDIDO_STATUS_LABEL = {
   reprovado: { label: 'Ajuste pedido', cls: 'bad' },
   producao: { label: 'Em produção', cls: 'ok' },
 };
+// Estado da lista de pedidos da vendedora — sobrevive a re-renders (aprovar/pedir ajuste não volta pro "Todos").
+let vendedoraPedidosView = { filter: null, query: '' };
 async function renderVendedoraPedidos(){
   const panel = document.getElementById('vendedora-panel-pedidos');
   panel.innerHTML = loadingBlockHtml('Carregando pedidos…');
@@ -6297,15 +6438,48 @@ async function renderVendedoraPedidos(){
     ({ pedidos } = await apiFetch('/api/pedidos'));
     ({ usuarios } = await apiFetch('/api/usuarios'));
   } catch (err) { panel.innerHTML = '<p class="empty-hint">Erro: ' + escapeHtml(err.message) + '</p>'; return; }
-  pedidos = pedidos.filter(p => p.mockup_url);
+  pedidos = pedidos.filter(p => p.mockup_url).sort((a,b) => new Date(b.criado_em) - new Date(a.criado_em));
   if (!pedidos.length) { panel.innerHTML = '<p class="empty-hint">Nenhum pedido ainda.</p>'; return; }
   const clientesById = {}; usuarios.forEach(u => clientesById[u.id] = u);
 
-  let html = '';
-  pedidos.slice().sort((a,b) => new Date(b.criado_em) - new Date(a.criado_em)).forEach(p => {
+  // Seções por situação — só aparecem as que têm pedido. "Para aprovar" é o que depende dela.
+  const FILTERS = [
+    { key: 'aprovar',  label: 'Para aprovar',      tone: 'warn', test: p => p.status === 'aguardando_aprovacao_vendedora' },
+    { key: 'cliente',  label: 'Aguardando cliente', tone: 'warn', test: p => p.status === 'aguardando_aprovacao_cliente' },
+    { key: 'ajuste',   label: 'Ajuste pedido',     tone: 'bad',  test: p => p.status === 'reprovado' },
+    { key: 'aprovado', label: 'Aprovados',         tone: 'ok',   test: p => p.status === 'aprovado' },
+    { key: 'producao', label: 'Em produção',       tone: 'ok',   test: p => p.status === 'producao' },
+    { key: 'todos',    label: 'Todos',                            test: () => true },
+  ];
+  FILTERS.forEach(f => { f.count = pedidos.filter(f.test).length; });
+  const visible = FILTERS.filter(f => f.key === 'todos' || f.count > 0);
+  const view = vendedoraPedidosView;
+  // primeira vez (ou seção que esvaziou): abre no que pede ação dela; sem nada pendente, em "Todos"
+  if (!visible.some(f => f.key === view.filter)) view.filter = (visible.find(f => f.key === 'aprovar') || visible.find(f => f.key === 'cliente') || visible[visible.length - 1]).key;
+
+  panel.innerHTML =
+    '<div class="admin-toolbar pedidos-toolbar" style="margin-bottom:14px">' +
+      '<div class="pedidos-toolbar-row"><div style="flex:1;min-width:220px;position:relative;display:flex;align-items:center">' +
+        '<span style="position:absolute;left:10px;display:flex;color:var(--ink-muted);pointer-events:none">' + icon('search') + '</span>' +
+        '<input type="text" id="vped-search" placeholder="Buscar por nº do pedido, cliente ou formato…" style="width:100%;border:1px solid var(--border);border-radius:8px;padding:7px 10px 7px 32px;background:var(--surface);color:inherit;font:inherit"></div></div>' +
+      '<div class="pedidos-filters" id="vped-filters" role="group" aria-label="Filtrar pedidos por situação"></div>' +
+    '</div><div id="vped-list"></div>';
+  const searchInput = document.getElementById('vped-search');
+  searchInput.value = view.query;
+  const filtersEl = document.getElementById('vped-filters');
+  const list = document.getElementById('vped-list');
+
+  const renderFilters = () => {
+    filtersEl.innerHTML = visible.map(f =>
+      '<button type="button" class="filter-chip' + (f.key === view.filter ? ' on' : '') + '" data-filter="' + f.key + '" aria-pressed="' + (f.key === view.filter) + '">' +
+      (f.tone ? '<span class="dot ' + f.tone + '"></span>' : '') + escapeHtml(f.label) + ' <b>' + f.count + '</b></button>'
+    ).join('');
+  };
+
+  const cardHtml = p => {
     const st = PEDIDO_STATUS_LABEL[p.status] || { label: p.status, cls: '' };
     const cliente = clientesById[p.cliente_id];
-    html += '<div class="admin-toolbar" data-id="' + p.id + '" style="margin-bottom:14px">';
+    let html = '<div class="admin-toolbar" data-id="' + p.id + '" style="margin-bottom:14px">';
     html += '<div class="prop-row" style="align-items:center"><div><b>' + escapeHtml(p.numero_pedido) + '</b> · ' + escapeHtml(p.gabarito_label || p.gabarito_id) + '<br>' +
       '<span class="hint">Cliente: ' + escapeHtml(cliente ? cliente.nome : '—') + ' · ' + new Date(p.criado_em).toLocaleString('pt-BR') + '</span></div>' +
       '<div><span class="chip status ' + st.cls + '"><span class="dot"></span>' + st.label + '</span></div></div>';
@@ -6331,67 +6505,89 @@ async function renderVendedoraPedidos(){
     if (p.status === 'aprovado') {
       html += '<div class="prop-row" style="margin-top:10px"><button class="btn primary small pedido-ir-producao" data-gabarito="' + escapeHtml(p.gabarito_id) + '">Abrir e exportar pra produção</button></div>';
     }
-    html += '</div>';
-  });
-  panel.innerHTML = html;
+    return html + '</div>';
+  };
 
-  panel.querySelectorAll('.pedido-aprovar, .pedido-reprovar').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.closest('[data-id]').getAttribute('data-id');
-      const isReprovar = btn.classList.contains('pedido-reprovar');
-      let motivo, ponto;
-      if (btn.classList.contains('pedido-aprovar-cliente')) {
+  const renderList = () => {
+    const f = FILTERS.find(x => x.key === view.filter) || FILTERS[FILTERS.length - 1];
+    const q = normalizeSearch(view.query);
+    const shown = pedidos.filter(p => f.test(p) && (!q || [p.numero_pedido, p.gabarito_label, p.gabarito_id, (clientesById[p.cliente_id] || {}).nome]
+      .some(v => normalizeSearch(v).includes(q))));
+    list.innerHTML = shown.length
+      ? shown.map(cardHtml).join('')
+      : '<p class="empty-hint">Nenhum pedido' + (view.query ? ' encontrado pra "' + escapeHtml(view.query) + '"' : '') + (f.key !== 'todos' ? ' em "' + escapeHtml(f.label) + '"' : '') + '.</p>';
+    wireCards(list);
+  };
+
+  filtersEl.addEventListener('click', e => {
+    const chip = e.target.closest('[data-filter]');
+    if (!chip) return;
+    view.filter = chip.getAttribute('data-filter');
+    renderFilters(); renderList();
+  });
+  searchInput.addEventListener('input', () => { view.query = searchInput.value; renderList(); });
+
+  function wireCards(root){
+    root.querySelectorAll('.pedido-aprovar, .pedido-reprovar').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.closest('[data-id]').getAttribute('data-id');
+        const isReprovar = btn.classList.contains('pedido-reprovar');
+        let motivo, ponto;
+        if (btn.classList.contains('pedido-aprovar-cliente')) {
+          const p = pedidos.find(x => x.id === id);
+          if (!(await confirmModal('Aprovar o pedido "' + (p ? p.numero_pedido : '') + '" em nome do cliente? Ele passa pra "Aprovado" e já pode ser exportado pra produção.', { title: 'Aprovar pedido', confirmLabel: 'Aprovar' }))) return;
+        }
+        if (isReprovar) {
+          const p = pedidos.find(x => x.id === id);
+          const result = await openAdjustmentModal(p && p.mockup_url, { title: 'Reprovar álbum' });
+          if (!result) return;
+          motivo = result.motivo; ponto = result.ponto;
+        }
+        setBtnLoading(btn, true);
+        try {
+          await apiFetch('/api/pedidos', { method: 'PATCH', body: JSON.stringify({ id, action: isReprovar ? 'reprovar' : 'aprovar', motivo, ponto }) });
+          showToast(isReprovar ? 'Cliente avisado do ajuste.' : 'Pedido aprovado!', 'success');
+          renderVendedoraPedidos();
+        } catch (err) { showToast(err.message, 'error'); setBtnLoading(btn, false); }
+      });
+    });
+    root.querySelectorAll('.pedido-whatsapp').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-id');
         const p = pedidos.find(x => x.id === id);
-        if (!(await confirmModal('Aprovar o pedido "' + (p ? p.numero_pedido : '') + '" em nome do cliente? Ele passa pra "Aprovado" e já pode ser exportado pra produção.', { title: 'Aprovar pedido', confirmLabel: 'Aprovar' }))) return;
-      }
-      if (isReprovar) {
-        const p = pedidos.find(x => x.id === id);
-        const result = await openAdjustmentModal(p && p.mockup_url, { title: 'Reprovar álbum' });
-        if (!result) return;
-        motivo = result.motivo; ponto = result.ponto;
-      }
-      setBtnLoading(btn, true);
-      try {
-        await apiFetch('/api/pedidos', { method: 'PATCH', body: JSON.stringify({ id, action: isReprovar ? 'reprovar' : 'aprovar', motivo, ponto }) });
-        showToast(isReprovar ? 'Cliente avisado do ajuste.' : 'Pedido aprovado!', 'success');
-        renderVendedoraPedidos();
-      } catch (err) { showToast(err.message, 'error'); setBtnLoading(btn, false); }
+        const cliente = p && clientesById[p.cliente_id];
+        if (!p || !cliente || !cliente.whatsapp) return;
+        const approvalLink = p.approval_token ? (location.origin + '/?aprovar=' + p.approval_token) : location.origin;
+        const defaultMessage = 'Olá ' + cliente.nome + '! Preparei o mockup do seu álbum "' + p.numero_pedido + '" — dá uma olhada: ' + p.mockup_url + ' — e aprove direto por aqui, sem precisar logar: ' + approvalLink;
+        const message = await whatsappComposerModal(defaultMessage, { nome: cliente.nome });
+        if (!message) return;
+        const link = waMeLink(cliente.whatsapp, message);
+        if (link) window.open(link, '_blank', 'noopener');
+      });
     });
-  });
-  panel.querySelectorAll('.pedido-whatsapp').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.getAttribute('data-id');
-      const p = pedidos.find(x => x.id === id);
-      const cliente = p && clientesById[p.cliente_id];
-      if (!p || !cliente || !cliente.whatsapp) return;
-      const approvalLink = p.approval_token ? (location.origin + '/?aprovar=' + p.approval_token) : location.origin;
-      const defaultMessage = 'Olá ' + cliente.nome + '! Preparei o mockup do seu álbum "' + p.numero_pedido + '" — dá uma olhada: ' + p.mockup_url + ' — e aprove direto por aqui, sem precisar logar: ' + approvalLink;
-      const message = await whatsappComposerModal(defaultMessage, { nome: cliente.nome });
-      if (!message) return;
-      const link = waMeLink(cliente.whatsapp, message);
-      if (link) window.open(link, '_blank', 'noopener');
+    root.querySelectorAll('.pedido-ir-producao').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.closest('[data-id]').getAttribute('data-id');
+        const gabaritoId = btn.getAttribute('data-gabarito');
+        const g = GABARITOS.find(x => x.id === gabaritoId);
+        if (!g) { showToast('Gabarito desse pedido não existe mais.'); return; }
+        setBtnLoading(btn, true, 'Abrindo…');
+        try {
+          const { pedido: full } = await apiFetch('/api/pedidos?id=' + encodeURIComponent(id));
+          if (!full.design_json) { showToast('Esse pedido não tem uma arte salva pra abrir.'); return; }
+          document.getElementById('screen-vendedora').hidden = true;
+          const pedidoMeta = full.vendedora_id ? { id: full.id, status: full.status } : null;
+          openEditor(g, null, full.design_json, pedidoMeta);
+        } catch (err) {
+          showToast(err.message, 'error');
+        } finally {
+          setBtnLoading(btn, false);
+        }
+      });
     });
-  });
-  panel.querySelectorAll('.pedido-ir-producao').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.closest('[data-id]').getAttribute('data-id');
-      const gabaritoId = btn.getAttribute('data-gabarito');
-      const g = GABARITOS.find(x => x.id === gabaritoId);
-      if (!g) { showToast('Gabarito desse pedido não existe mais.'); return; }
-      setBtnLoading(btn, true, 'Abrindo…');
-      try {
-        const { pedido: full } = await apiFetch('/api/pedidos?id=' + encodeURIComponent(id));
-        if (!full.design_json) { showToast('Esse pedido não tem uma arte salva pra abrir.'); return; }
-        document.getElementById('screen-vendedora').hidden = true;
-        const pedidoMeta = full.vendedora_id ? { id: full.id, status: full.status } : null;
-        openEditor(g, null, full.design_json, pedidoMeta);
-      } catch (err) {
-        showToast(err.message, 'error');
-      } finally {
-        setBtnLoading(btn, false);
-      }
-    });
-  });
+  }
+
+  renderFilters(); renderList();
 }
 async function renderVendedoraMockups(){
   const panel = document.getElementById('vendedora-panel-mockups');
@@ -6849,7 +7045,7 @@ async function renderAdminAssets(){
   assetTipoSelect.addEventListener('change', syncCategoriaDatalist);
   syncCategoriaDatalist();
 
-  document.getElementById('btn-add-asset').addEventListener('click', () => {
+  document.getElementById('btn-add-asset').addEventListener('click', async () => {
     const file = document.getElementById('new-asset-file').files[0];
     const nome = document.getElementById('new-asset-nome').value.trim();
     const tipo = document.getElementById('new-asset-tipo').value;
@@ -6857,17 +7053,22 @@ async function renderAdminAssets(){
     const errEl = document.getElementById('add-asset-error');
     errEl.textContent = '';
     if (!file || !nome) { errEl.textContent = 'Escolha um arquivo e dê um nome.'; return; }
-    if (file.size > 2.5 * 1024 * 1024) { errEl.textContent = 'Arquivo muito grande (máx. 2,5MB).'; return; }
-    const reader = new FileReader();
-    reader.onload = async () => {
+    // Ícone passa pelo mesmo preparo do editor: SVG ganha o que faltar pra abrir (xmlns, tamanho) e
+    // PNG/JPG/WebP pesados são reduzidos — antes, arquivo >2,5MB ou SVG "cru" era recusado/quebrado.
+    // Fonte segue como veio (o navegador manda o tipo vazio em alguns .ttf/.otf: vai como binário).
+    if (tipo !== 'icone' && file.size > 2.5 * 1024 * 1024) { errEl.textContent = 'Arquivo muito grande (máx. 2,5MB).'; return; }
+    const btnAdd = document.getElementById('btn-add-asset');
+    btnAdd.disabled = true;
+    try {
+      const dataUrl = tipo === 'icone' ? (await prepareIconFile(file)).src : await readFileAsDataUrl(file);
       try {
-        await apiFetch('/api/assets', { method: 'POST', body: JSON.stringify({ tipo, nome, categoria, dataUrl: reader.result }) });
+        await apiFetch('/api/assets', { method: 'POST', body: JSON.stringify({ tipo, nome, categoria, dataUrl }) });
         showToast((tipo === 'icone' ? 'Ícone' : 'Fonte') + ' "' + nome + '" adicionado ao site.');
         await loadSiteAssets();
         renderAdminAssets();
       } catch (err) { errEl.textContent = err.message; }
-    };
-    reader.readAsDataURL(file);
+    } catch (err) { errEl.textContent = err.message; }
+    finally { btnAdd.disabled = false; }
   });
   const selectToggle = document.getElementById('btn-icon-select-toggle');
   if (selectToggle) selectToggle.addEventListener('click', () => {
